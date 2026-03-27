@@ -22,10 +22,7 @@ function ThemeProvider({
 }
 
 function isTypingTarget(target: EventTarget | null) {
-  if (!(target instanceof HTMLElement)) {
-    return false
-  }
-
+  if (!(target instanceof HTMLElement)) return false
   return (
     target.isContentEditable ||
     target.tagName === "INPUT" ||
@@ -37,33 +34,28 @@ function isTypingTarget(target: EventTarget | null) {
 function ThemeHotkey() {
   const { resolvedTheme, setTheme } = useTheme()
 
+  // Keep a ref so the keydown handler always sees the latest theme
+  // without needing to re-register on every toggle.
+  const resolvedThemeRef = React.useRef(resolvedTheme)
+  React.useEffect(() => {
+    resolvedThemeRef.current = resolvedTheme
+  }, [resolvedTheme])
+
+  // Register once — reads from the ref at call time instead of closing
+  // over the theme value, so the listener never needs to be replaced.
   React.useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.defaultPrevented || event.repeat) {
-        return
-      }
-
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return
-      }
-
-      if (event.key.toLowerCase() !== "d") {
-        return
-      }
-
-      if (isTypingTarget(event.target)) {
-        return
-      }
-
-      setTheme(resolvedTheme === "dark" ? "light" : "dark")
+      if (event.defaultPrevented || event.repeat) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+      if (event.key.toLowerCase() !== "d") return
+      if (isTypingTarget(event.target)) return
+      setTheme(resolvedThemeRef.current === "dark" ? "light" : "dark")
     }
 
     window.addEventListener("keydown", onKeyDown)
-
-    return () => {
-      window.removeEventListener("keydown", onKeyDown)
-    }
-  }, [resolvedTheme, setTheme])
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [setTheme])
+  // ↑ setTheme is stable (never changes), so this effect runs exactly once
 
   return null
 }

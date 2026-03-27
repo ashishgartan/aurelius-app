@@ -1,0 +1,111 @@
+// app/sandbox/page.tsx
+// This page is intentionally a bare-bones isolated sandbox runner.
+// It is loaded inside an iframe from ArtifactPanel and communicates
+// exclusively via postMessage — no shared state, no shared cookies,
+// no parent navigation leaks.
+export const metadata = { robots: "noindex" }
+
+export default function SandboxPage() {
+  return (
+    // The runtime logic is entirely in the inline script below.
+    // We return a minimal HTML shell — React is NOT used for rendering here.
+    <html>
+      <head>
+        <meta charSet="UTF-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <style>{`
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body { width: 100%; height: 100vh; overflow: hidden; }
+          #root { width: 100%; height: 100%; }
+        `}</style>
+      </head>
+      <body>
+        <div id="root" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+(function() {
+  // ── Intercept console output ────────────────────────────────────────
+  var originals = { log: console.log, error: console.error, warn: console.warn };
+  ['log','error','warn'].forEach(function(m) {
+    console[m] = function() {
+      var args = Array.from(arguments).map(function(a) {
+        try { return typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a); }
+        catch(e) { return '[circular]'; }
+      });
+      window.parent.postMessage({ type: 'console', level: m, text: args.join(' ') }, '*');
+      originals[m].apply(console, arguments);
+    };
+  });
+
+  // ── Intercept uncaught errors ───────────────────────────────────────
+  window.onerror = function(msg, src, line) {
+    window.parent.postMessage({ type: 'error', text: msg + (line ? ' (line ' + line + ')' : '') }, '*');
+    return true;
+  };
+  window.onunhandledrejection = function(e) {
+    window.parent.postMessage({ type: 'error', text: String(e.reason || 'Unhandled promise rejection') }, '*');
+  };
+
+  // ── Intercept link navigation ───────────────────────────────────────
+  document.addEventListener('click', function(e) {
+    var el = e.target && e.target.closest && e.target.closest('a[href]');
+    if (!el) return;
+    var href = el.getAttribute('href');
+    if (!href || href === '#' || href.startsWith('#')) return;
+    e.preventDefault();
+    window.parent.postMessage({ type: 'open-link', href: href }, '*');
+  }, true);
+
+  // ── Receive code from parent ────────────────────────────────────────
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'run') return;
+
+    var lang = (e.data.lang || '').toLowerCase();
+    var code = e.data.code || '';
+    var dark = !!e.data.dark;
+
+    var root = document.getElementById('root');
+    root.innerHTML = '';
+
+    if (lang === 'html') {
+      // Full HTML document — render in a nested iframe for maximum isolation
+      var nestedFrame = document.createElement('iframe');
+      nestedFrame.style.cssText = 'width:100%;height:100vh;border:0;';
+      nestedFrame.sandbox = 'allow-scripts allow-forms allow-modals allow-popups';
+      nestedFrame.srcdoc = code;
+      root.appendChild(nestedFrame);
+
+    } else if (lang === 'css') {
+      var cssFrame = document.createElement('iframe');
+      cssFrame.style.cssText = 'width:100%;height:100vh;border:0;';
+      cssFrame.sandbox = 'allow-scripts';
+      cssFrame.srcdoc = '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{margin:0;padding:16px;font-family:system-ui,sans-serif;background:' + (dark?'#1e1e2e':'#fff') + ';color:' + (dark?'#cdd6f4':'#111') + '}' + code + '</style></head><body><h1>Heading 1</h1><h2>Heading 2</h2><p>A paragraph with <strong>bold</strong> and <em>italic</em> text.</p><ul><li>List item one</li><li>List item two</li></ul><button>Button</button> <a href="#">Link</a></body></html>';
+      root.appendChild(cssFrame);
+
+    } else {
+      // JavaScript — run in a console-style output view
+      var consoleBg = dark ? '#0e1117' : '#f6f8fa';
+      var consoleClr = dark ? '#c9d1d9' : '#24292e';
+      root.style.cssText = 'background:' + consoleBg + ';color:' + consoleClr + ';font-family:"Roboto Mono",Menlo,Monaco,Consolas,monospace;font-size:12.5px;line-height:1.65;padding:14px 16px;height:100vh;overflow-y:auto;';
+      try {
+        // eslint-disable-next-line no-eval
+        eval(code);
+      } catch(err) {
+        window.parent.postMessage({ type: 'error', text: String(err) }, '*');
+      }
+    }
+
+    window.parent.postMessage({ type: 'ready' }, '*');
+  });
+
+  // Signal that we are ready to receive code
+  window.parent.postMessage({ type: 'sandbox-ready' }, '*');
+})();
+            `,
+          }}
+        />
+      </body>
+    </html>
+  )
+}
